@@ -14,16 +14,95 @@ pub mod game_loop;
 pub mod stopwatch;
 pub mod timer;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
+pub struct TimeSettings {
+  pub tick_rate: f64,
+  pub bail_threshold: u32,
+  pub max_samples: usize,
+}
+
+impl Default for TimeSettings {
+  fn default() -> Self {
+    Self {
+      tick_rate: 128.0,
+      bail_threshold: 1024,
+      max_samples: 128,
+    }
+  }
+}
+
+impl TimeSettings {
+  pub fn build(&self) -> Time {
+    Time::new(self.tick_rate, self.bail_threshold, self.max_samples)
+  }
+}
+
 pub struct Time {
+  tick_rate: f64,
+  tick_time: Duration,
+  lag_time: Duration,
+  step_count: u32,
+  bail_threshold: u32,
+
   start_time: Instant,
+
+  previous_frame: Instant,
+  current_frame: Instant,
   delta_time: Duration,
+
+  tick_previous_frame: Instant,
+  tick_current_frame: Instant,
   tick_delta_time: Duration,
+  
+
+  frame_times: RingBuffer<Duration>,
   average_delta_time: Duration,
 }
 
-#[allow(unused)]
+impl Default for Time {
+  fn default() -> Self {
+    const TICK_RATE: f64 = 128.0;
+    let tick_time: Duration = Duration::from_secs_f64(1. / TICK_RATE);
+    const BAIL_THRESHOLD: u32 = 1024;
+    Self {
+      tick_rate: TICK_RATE,
+      tick_time,
+      lag_time: Default::default(),
+      step_count: 0,
+      bail_threshold: BAIL_THRESHOLD,
+      start_time: Instant::now(),
+      previous_frame: Instant::now(),
+      current_frame: Instant::now(),
+      delta_time: Default::default(),
+      tick_previous_frame: Instant::now(),
+      tick_current_frame: Instant::now(),
+      tick_delta_time: Default::default(),
+      frame_times: RingBuffer::new(100),
+      average_delta_time: Default::default(),
+    }
+  }
+}
+
 impl Time {
+  pub fn new(tick_rate: f64, bail_threshold: u32, max_samples: usize) -> Self {
+    Self {
+      tick_rate,
+      bail_threshold,
+      frame_times: RingBuffer::new(max_samples),
+      ..Default::default()
+    }
+  }
+
+  pub fn with_tick_rate(mut self, tick_rate: f64) -> Self {
+    self.tick_rate = tick_rate;
+    self
+  }
+
+  pub fn with_bail_threshold(mut self, bail_threshold: u32) -> Self {
+    self.bail_threshold = bail_threshold;
+    self
+  }
+
   pub fn since_start(&self) -> Duration {
     Instant::now() - self.start_time
   }
@@ -55,104 +134,8 @@ impl Time {
   pub fn now(&self) -> Instant {
     Instant::now()
   }
-}
 
-#[derive(Debug)]
-pub struct TimeSettings {
-  pub tick_rate: f64,
-  pub bail_threshold: u32,
-  pub max_samples: usize,
-}
-
-impl Default for TimeSettings {
-  fn default() -> Self {
-    Self {
-      tick_rate: 128.0,
-      bail_threshold: 1024,
-      max_samples: 128,
-    }
-  }
-}
-
-impl TimeSettings {
-  pub fn build(&self) -> EngineTime {
-    EngineTime::new(self.tick_rate, self.bail_threshold, self.max_samples)
-  }
-}
-
-pub struct EngineTime {
-  tick_rate: f64,
-  tick_time: Duration,
-  lag_time: Duration,
-  step_count: u32,
-  bail_threshold: u32,
-
-  start_time: Instant,
-
-  previous_frame: Instant,
-  current_frame: Instant,
-  delta_time: Duration,
-
-  tick_previous_frame: Instant,
-  tick_current_frame: Instant,
-  tick_delta_time: Duration,
-
-  frame_times: RingBuffer<Duration>,
-}
-
-impl Default for EngineTime {
-  fn default() -> Self {
-    const TICK_RATE: f64 = 128.0;
-    let tick_time: Duration = Duration::from_secs_f64(1. / TICK_RATE);
-    const BAIL_THRESHOLD: u32 = 1024;
-    Self {
-      tick_rate: TICK_RATE,
-      tick_time,
-      lag_time: Default::default(),
-      step_count: 0,
-      bail_threshold: BAIL_THRESHOLD,
-      start_time: Instant::now(),
-      previous_frame: Instant::now(),
-      current_frame: Instant::now(),
-      delta_time: Default::default(),
-      tick_previous_frame: Instant::now(),
-      tick_current_frame: Instant::now(),
-      tick_delta_time: Default::default(),
-      frame_times: RingBuffer::new(100),
-    }
-  }
-}
-
-impl EngineTime {
-  pub fn new(tick_rate: f64, bail_threshold: u32, max_samples: usize) -> Self {
-    Self {
-      tick_rate,
-      bail_threshold,
-      frame_times: RingBuffer::new(max_samples),
-      ..Default::default()
-    }
-  }
-
-  pub fn with_tick_rate(mut self, tick_rate: f64) -> Self {
-    self.tick_rate = tick_rate;
-    self
-  }
-
-  pub fn with_bail_threshold(mut self, bail_threshold: u32) -> Self {
-    self.bail_threshold = bail_threshold;
-    self
-  }
-
-  pub fn time(&self) -> Time {
-    Time {
-      start_time: self.start_time,
-      delta_time: self.delta_time,
-      tick_delta_time: self.tick_delta_time,
-      average_delta_time: self.average_delta(),
-    }
-  }
-
-  fn average_delta(&self) -> Duration {
+  fn average_delta_time(&self) -> Duration {
     self
       .frame_times
       .iter()
@@ -177,6 +160,7 @@ impl EngineTime {
     self.step_count = 0;
 
     self.frame_times.push(self.delta_time);
+    self.average_delta_time = self.average_delta_time();
   }
 
   pub fn tick(&mut self) {
